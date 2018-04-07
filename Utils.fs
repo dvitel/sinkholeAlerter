@@ -1,6 +1,5 @@
 module SinkholeAlerter.Utils 
 open System
-open System.Net
 
 ///search array for binary pattern recursivelly 
 let rec searchArrayForPattern (buffer: byte[]) startIndex endIndex (pattern: byte[]) = 

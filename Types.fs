@@ -18,29 +18,14 @@ type Infringement = {
 }    
     with 
         override infringement.ToString() = 
-            sprintf "%s, %s --> %A:%d --> %s:%d --> %s:%d, %s" 
+            sprintf "%s, %s --> %s --> %s:%d --> %s:%d, %s" 
                 (if infringement.userName="" then "<no name>" else infringement.userName)
-                infringement.mac
-                infringement.preNatIp
-                infringement.preNatPort
+                (if infringement.mac="" then "<no mac>" else infringement.mac)
+                (if infringement.preNatPort = 0 then "<no preNat>" else 
+                    sprintf "%A:%d" infringement.preNatIp infringement.preNatPort)
                 infringement.postNatIp
                 infringement.postNatPort
                 infringement.remoteIp
                 infringement.remotePort
                 (infringement.localTimeStamp.ToString("yyyy-MM-dd HH:mm:ss"))
-
-// type LogsDb = 
-//     SqlDataProvider<
-//         DatabaseVendor = Common.DatabaseProviderTypes.MYSQL,
-//         ConnectionString = connectionString,
-//         IndividualsAmount = 1000,
-//         UseOptionTypes = true,
-//         ResolutionPath = connectionString,
-//         Owner = "logs_db"> 
-
-// type LogsDb() =
-    
-//     implement IDisposable with
-//         override x.Dispose() = 
-
                 

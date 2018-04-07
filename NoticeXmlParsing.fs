@@ -19,34 +19,36 @@ let parseAsync filePath = async {
     let! noticeText = Async.AwaitTask(File.ReadAllTextAsync(filePath, Text.Encoding.UTF8))
     let m = noticePattern.Match(noticeText)
     if m.Success then 
+        let xmlns = XNamespace.op_Implicit "http://www.acns.net/ACNS"
         let infringementXml = XDocument.Parse(m.Groups.["notice"].Value, LoadOptions.None)
+        //infringementXml.Root.Name <- xmlns + infringementXml.Root.Name.LocalName
         let sourceElement = 
             "Source"
-            |> XName.op_Implicit
-            |> infringementXml.Element
+            |> (+) xmlns
+            |> infringementXml.Root.Element
         let timeStamp: DateTime = 
             "TimeStamp"
-            |> XName.op_Implicit
+            |> (+) xmlns
             |> sourceElement.Element
             |> XElement.op_Explicit
         let postNatIp: string = 
             "IP_Address"
-            |> XName.op_Implicit
+            |> (+) xmlns
             |> sourceElement.Element
             |> XElement.op_Explicit   
         let postNatPort: int = 
             "Port"
-            |> XName.op_Implicit
+            |> (+) xmlns
             |> sourceElement.Element
             |> XElement.op_Explicit   
         let remoteIp: string = 
             "Destination_IP"
-            |> XName.op_Implicit
+            |> (+) xmlns
             |> sourceElement.Element
             |> XElement.op_Explicit
         let remotePort: int = 
             "Destination_Port"
-            |> XName.op_Implicit
+            |> (+) xmlns
             |> sourceElement.Element
             |> XElement.op_Explicit            
         return 

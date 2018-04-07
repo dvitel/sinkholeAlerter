@@ -21,7 +21,7 @@ let private createDhcpQueryAndParameters ipDecimalWithTimeStamp =
     let query = 
         sprintf "
 CREATE TEMPORARY TABLE %s (
-    ip_decimal int(10) NOT NULL PRIMARY KEY UNIQUE,
+    ip_decimal int(10) UNSIGNED NOT NULL PRIMARY KEY UNIQUE,
     tm timestamp NOT NULL);
         
 INSERT INTO %s VALUES %s;
@@ -30,20 +30,23 @@ SELECT * FROM
     (SELECT dhcp.ip_decimal, dhcp.mac_string FROM dhcp 
         JOIN %s r ON dhcp.ip_decimal = r.ip_decimal 
                 AND dhcp.timeStamp <= r.tm 
-                AND dhcp.timeStamp > TIMESTAMPADD(minute, -10, r.tm)
         ORDER BY dhcp.ip_decimal ASC, dhcp.timestamp DESC) res
 GROUP BY ip_decimal;    
             " reqId reqId (String.Join(",", reqValuesQueryParts)) reqId
     query, reqValuesParameters
 
+type DhcpSearchResult = 
+    | Processed of Infringement list * Infringement list
+    | Error of string
 let findMacInDhcpAsync (infringements: Infringement list) = async {
+    try
     let chunks = 
         infringements
         |> List.splitInto 10    
-    let! infringements = 
+    let! infringementsWithMac, infringementsWithoutMac = 
         chunks 
         |> List.fold(fun acc chunk -> async {
-            let! infringements = acc
+            let! infringementsWithMac, infringementsWithoutMac = acc
             let query, parameters = 
                 chunk
                 |> List.map(fun infringement -> 
@@ -52,15 +55,23 @@ let findMacInDhcpAsync (infringements: Infringement list) = async {
             let! ipToMacMapping = 
                 Db.queryDbAsync query parameters 
                     (fun reader acc -> 
-                        Map.add (reader.[0] :?> uint32)
-                            (reader.[1] :?> string) acc) Map.empty
+                        let ipDecimal = reader.[0] :?> uint32
+                        let mac = reader.[1] :?> string
+                        Map.add ipDecimal mac acc) Map.empty
             return
                 chunk
-                |> List.fold(fun acc infringement -> 
+                |> List.fold(fun (infringementsWithMac, infringementsWithoutMac) infringement -> 
                     match Map.tryFind infringement.preNatIpDecimal ipToMacMapping with
                     | Some mac -> 
-                        {infringement with mac = mac}::acc
-                    | _ -> infringement::acc) infringements
-            }) (async.Return [])    
-    return infringements        
+                        {infringement with mac = mac}::infringementsWithMac, infringementsWithoutMac
+                    | _ -> infringementsWithMac, infringement::infringementsWithoutMac) 
+                    (infringementsWithMac, infringementsWithoutMac)
+            }) (async.Return ([], []))    
+    return Processed(infringementsWithMac, infringementsWithoutMac)            
+    with e -> 
+        let e = 
+            match e with 
+            | :? AggregateException as e -> e.InnerException
+            | _ -> e 
+        return Error e.Message                           
 }               
