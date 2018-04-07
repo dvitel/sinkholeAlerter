@@ -1,46 +1,22 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
-
-  <!-- Type providers currently can't run inside the .NET Core 2.0 hosted compiler, see https://github.com/Microsoft/visualfsharp/pull/3658#issuecomment-334773415 -->
-  <PropertyGroup>
-    <IsWindows Condition="'$(OS)' == 'Windows_NT'">true</IsWindows>
-    <IsOSX Condition="'$([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform($([System.Runtime.InteropServices.OSPlatform]::OSX)))' == 'true'">true</IsOSX>
-    <IsLinux Condition="'$([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform($([System.Runtime.InteropServices.OSPlatform]::Linux)))' == 'true'">true</IsLinux>
-  </PropertyGroup>  
-  <PropertyGroup Condition="'$(IsWindows)' == 'true' AND Exists('C:\Program Files (x86)\Microsoft SDKs\F#\4.1\Framework\v4.0\fsc.exe')">
-    <FscToolPath>C:\Program Files (x86)\Microsoft SDKs\F#\4.1\Framework\v4.0</FscToolPath>
-    <FscToolExe>fsc.exe</FscToolExe>
-  </PropertyGroup>
-  <PropertyGroup Condition="'$(IsOSX)' == 'true'  AND Exists('/Library/Frameworks/Mono.framework/Versions/Current/Commands/fsharpc')">
-    <FscToolPath>/Library/Frameworks/Mono.framework/Versions/Current/Commands</FscToolPath>
-    <FscToolExe>fsharpc</FscToolExe>
-  </PropertyGroup>
-  <PropertyGroup Condition="'$(IsLinux)' == 'true' AND Exists('/usr/bin/fsharpc')">
-    <FscToolPath>/usr/bin</FscToolPath>
-    <FscToolExe>fsharpc</FscToolExe>
-  </PropertyGroup>
-
+<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>netcoreapp2.0</TargetFramework>
   </PropertyGroup>
-
+  <PropertyGroup Condition="'$(IsWindows)' == 'true' AND Exists('C:\Program Files (x86)\Microsoft SDKs\F#\4.1\Framework\v4.0\fsc.exe')" />
+  <PropertyGroup Condition="'$(IsOSX)' == 'true'  AND Exists('/Library/Frameworks/Mono.framework/Versions/Current/Commands/fsharpc')" />
+  <PropertyGroup Condition="'$(IsLinux)' == 'true' AND Exists('/usr/bin/fsharpc')" />
   <ItemGroup>
+    <Compile Include="Utils.fs" />
+    <Compile Include="Types.fs" />
+    <Compile Include="NoticeXmlParsing.fs" />
+    <Compile Include="NatLogSearch.fs" />
+    <Compile Include="DB.fs" />
+    <Compile Include="DhcpDbSearch.fs" />
+    <Compile Include="UserNameDbSearch.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
-
-  <ItemGroup><!-- Mono fix, and .NET Standard fix -->
-    <Reference Include="FSharp.Data.SqlProvider">
-      <HintPath>./lib/FSharp.Data.SqlProvider.dll</HintPath>
-      <!--HintPath>../../packages/SQLProvider/lib/net451/FSharp.Data.SqlProvider.dll</HintPath-->
-    </Reference>
-  </ItemGroup>  
   <ItemGroup>
-    <PackageReference Include="FSharp.Data" Version="2.4.6" />
-    <PackageReference Include="MySqlConnector" Version="0.38.0" />
-    <!--<PackageReference Include="SQLProvider" Version="1.1.39" /> -->
-    <PackageReference Include="System.Buffers" Version="4.4.0" />
-    <PackageReference Include="System.Data.Common" Version="4.3.0" />
-    <PackageReference Include="System.Runtime.InteropServices.RuntimeInformation" Version="4.3.0" />
-    <PackageReference Include="System.Threading.Tasks.Extensions" Version="4.4.0" />
-  </ItemGroup>  
+    <PackageReference Include="MySqlConnector" Version="0.39.0" />
+  </ItemGroup>
 </Project>
