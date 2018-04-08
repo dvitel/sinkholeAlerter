@@ -38,7 +38,7 @@ GROUP BY ip_decimal;
 type DhcpSearchResult = 
     | Processed of Infringement list * Infringement list
     | Error of string
-let findMacInDhcpAsync (infringements: Infringement list) = async {
+let findMacInDhcpAsync connectionString (infringements: Infringement list) = async {
     try
     let chunks = 
         infringements
@@ -53,7 +53,7 @@ let findMacInDhcpAsync (infringements: Infringement list) = async {
                     infringement.preNatIpDecimal, infringement.localTimeStamp)
                 |> createDhcpQueryAndParameters
             let! ipToMacMapping = 
-                Db.queryDbAsync query parameters 
+                Db.queryDbAsync connectionString query parameters 
                     (fun reader acc -> 
                         let ipDecimal = reader.[0] :?> uint32
                         let mac = reader.[1] :?> string

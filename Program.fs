@@ -1,20 +1,26 @@
 ﻿module SinkholeAlerter.App
 open System.IO
+open Microsoft.Extensions.Configuration
 
 [<EntryPoint>]
 let main argv =
     try
-    if argv.Length < 1 then 
-        printfn "Usage: dotnet <thisdll> <path to notices folder>"
-        exit 1
-    let folderPath = argv.[0]
+    let configFileName =
+        if argv.Length > 1 then 
+            argv.[0]
+        else "config.json"        
+    let builder = 
+        ConfigurationBuilder()
+            .SetBasePath(Directory.GetCurrentDirectory())
+            .AddJsonFile(configFileName)
+    let config = builder.Build()
     async {
         printfn "----------------------------------------"        
         printfn "Reading infringements from notices..."        
-        let! infringements = NoticeXmlParsing.parseManyAsync folderPath            
+        let! infringements = NoticeXmlParsing.parseManyAsync config.["noticesFolder"]            
         let infringementsByNatLog = 
             infringements |> List.fold(fun acc infringement -> 
-                let natLogFile = Path.Combine(".", "nat_logs", NatLogSearch.getNatLogFileName infringement)
+                let natLogFile = Path.Combine(config.["natLogFolder"], NatLogSearch.getNatLogFileName infringement)
                 match Map.tryFind natLogFile acc with
                 | None -> 
                     Map.add natLogFile [infringement] acc
@@ -66,7 +72,7 @@ let main argv =
             ) []
         printfn "----------------------------------------"    
         printfn "DHCP db search..."             
-        let! infringementsOpt = DhcpDbSearch.findMacInDhcpAsync infringements
+        let! infringementsOpt = DhcpDbSearch.findMacInDhcpAsync config.["connectionString"] infringements
         let infringements =
             match infringementsOpt with
             | DhcpDbSearch.DhcpSearchResult.Processed (infringementsWithMac, []) -> 
@@ -93,7 +99,7 @@ let main argv =
             | _ -> 
                 printfn "----------------------------------------"    
                 printfn "Fetching user info data..."
-                let! radiusInfringementsOpt, nonradiusInfringementsOpt = UserNameDbSearch.searchAsync infringements
+                let! radiusInfringementsOpt, nonradiusInfringementsOpt = UserNameDbSearch.searchAsync config.["connectionString"] infringements
                 let radiusInfringements = 
                     match radiusInfringementsOpt with
                     | UserNameDbSearch.Error msg, infringements ->

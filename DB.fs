@@ -2,11 +2,8 @@ module SinkholeAlerter.Db
 
 open MySql.Data.MySqlClient
 
-[<Literal>] 
-let ConnectionString = "Server=localhost;Database=logs_db;Uid=cyber;Pwd=u30530631;Auto Enlist=false;Convert Zero Datetime=true;"
-
-let queryDbAsync query (parameters: Map<string, obj>) readEntity initialAcc = async {
-    use conn = new MySqlConnection(ConnectionString)
+let queryDbAsync connectionString query (parameters: Map<string, obj>) readEntity initialAcc = async {
+    use conn = new MySqlConnection(connectionString)
     do! Async.AwaitTask(conn.OpenAsync())
     use cmd = conn.CreateCommand()
     cmd.CommandText <- query 

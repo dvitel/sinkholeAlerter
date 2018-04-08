@@ -38,7 +38,7 @@ SELECT radacct.username, radacct.FramedIPAddress, radacct.CallingStationId FROM 
             " reqId reqId (String.Join(",", reqValuesQueryParts)) reqId
     query, reqValuesParameters
 
-let private radiusTableSearch (infringements: Infringement list) = async {
+let private radiusTableSearch connectionString (infringements: Infringement list) = async {
     try
     let chunks = 
         infringements
@@ -54,7 +54,7 @@ let private radiusTableSearch (infringements: Infringement list) = async {
                     ip, infringement.mac)
                 |> createRadiusQueryAndParams
             let! ipMacToUserNameMapping = 
-                Db.queryDbAsync query parameters 
+                Db.queryDbAsync connectionString query parameters 
                     (fun reader acc -> 
                         let userName = reader.[0] :?> string
                         let ip = reader.[1] :?> string
@@ -101,7 +101,7 @@ SELECT contactinfo.contact, contactinfo.mac_string FROM contactinfo
             " reqId reqId (String.Join(",", reqValuesQueryParts)) reqId
     query, reqValuesParameters
 
-let private nonradiusTableSearch (infringements: Infringement list) = async {
+let private nonradiusTableSearch connectionString (infringements: Infringement list) = async {
     try
     let chunks = 
         infringements
@@ -115,7 +115,7 @@ let private nonradiusTableSearch (infringements: Infringement list) = async {
                 |> List.map(fun infringement -> infringement.mac)
                 |> createNonRadiusQueryAndParams
             let! macToUserNameMapping = 
-                Db.queryDbAsync query parameters 
+                Db.queryDbAsync connectionString query parameters 
                     (fun reader acc -> 
                         let userName = reader.[0] :?> string
                         let mac = reader.[1] :?> string
@@ -134,7 +134,7 @@ let private nonradiusTableSearch (infringements: Infringement list) = async {
          | e -> return UserContactSearchResult.Error e.Message              
 }
 
-let searchAsync (infringements: Infringement list) = async {
+let searchAsync connectionString (infringements: Infringement list) = async {
     //first we filter all these infringements which does not have mac from prev step
     let radiusInfringements, nonradiusInfringements = 
         infringements |> List.fold(fun (radiusInfringements, nonradiusInfringements) infringement ->   
@@ -149,10 +149,10 @@ let searchAsync (infringements: Infringement list) = async {
     let! radiusInfringements' = 
         match radiusInfringements with
         | [] -> async.Return Noop
-        | _ -> radiusTableSearch radiusInfringements
+        | _ -> radiusTableSearch connectionString radiusInfringements
     let! nonradiusInfringements' = 
         match nonradiusInfringements with
         | [] -> async.Return Noop
-        | _ -> nonradiusTableSearch nonradiusInfringements
+        | _ -> nonradiusTableSearch connectionString nonradiusInfringements
     return (radiusInfringements', radiusInfringements), (nonradiusInfringements', nonradiusInfringements)
 }        
