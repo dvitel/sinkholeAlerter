@@ -39,6 +39,11 @@ which contains main dll and next dependencies:
 5. _sinkholeAlerter.deps.json_ - .NET Core app dependencies
 6. _config.json_ - config of application, see above
 
+To obtain minified package go to https://github.com/dvitel/sinkholeAlerter/blob/master/pack/sinkholeAlerter.tar.gz \
+Download tar.gz and unzip it. After that, configure config.json to point to your notices, nat logs and db. \
+Then, execute **dotnet sinkholeAlerter.dll** \
+As it was explained you can provide custom configs like this **dotnet sinkholeAlerter.dll myconfig1.json**
+
 Another way to publish this app is through self-contained packaging. \
 Result package is much bigger, but in this case installation of .NET Core is not required on target machine \
 (note: small dependencies still exist. See [this again](https://docs.microsoft.com/en-us/dotnet/core/linux-prerequisites?tabs=netcore2x#linux-distribution-dependencies))
