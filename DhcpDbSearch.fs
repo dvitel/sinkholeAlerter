@@ -3,8 +3,8 @@ module SinkholeAlerter.DhcpDbSearch
 open System
 open SinkholeAlerter.Types
 
-let private createDhcpQueryAndParameters ipDecimalWithTimeStamp = 
-    let reqId = Guid.NewGuid().ToString().Replace("-", "_") |> sprintf "dhcp_%s"
+let private createDhcpQueryAndParameters reqId ipDecimalWithTimeStamp = 
+    let reqTable = reqId.ToString().Replace("-", "_") |> sprintf "dhcp_%s"
     let _, reqValuesQueryParts, reqValuesParameters = 
         ipDecimalWithTimeStamp
         |> List.fold(fun (i, reqValuesQueryParts, reqValuesParameters) (ipDecimal, timeStamp) -> 
@@ -32,26 +32,21 @@ SELECT * FROM
                 AND dhcp.timeStamp <= r.tm 
         ORDER BY dhcp.ip_decimal ASC, dhcp.timestamp DESC) res
 GROUP BY ip_decimal;    
-            " reqId reqId (String.Join(",", reqValuesQueryParts)) reqId
+            " reqTable reqTable (String.Join(",", reqValuesQueryParts)) reqTable
     query, reqValuesParameters
 
-type DhcpSearchResult = 
-    | Processed of Infringement list * Infringement list
-    | Error of string
-let findMacInDhcpAsync connectionString (infringements: Infringement list) = async {
+let findMacInDhcpAsync reqId connectionString (infringements: Infringement list) = async {
     try
-    let chunks = 
-        infringements
-        |> List.splitInto 10    
-    let! infringementsWithMac, infringementsWithoutMac = 
-        chunks 
+    let! infringements = 
+        infringements 
+        |> List.splitInto 20 //todo: some experimentation
         |> List.fold(fun acc chunk -> async {
-            let! infringementsWithMac, infringementsWithoutMac = acc
+            let! infringements = acc
             let query, parameters = 
                 chunk
                 |> List.map(fun infringement -> 
                     infringement.preNatIpDecimal, infringement.localTimeStamp)
-                |> createDhcpQueryAndParameters
+                |> createDhcpQueryAndParameters reqId
             let! ipToMacMapping = 
                 Db.queryDbAsync connectionString query parameters 
                     (fun reader acc -> 
@@ -60,18 +55,26 @@ let findMacInDhcpAsync connectionString (infringements: Infringement list) = asy
                         Map.add ipDecimal mac acc) Map.empty
             return
                 chunk
-                |> List.fold(fun (infringementsWithMac, infringementsWithoutMac) infringement -> 
+                |> List.fold(fun infringements infringement -> 
                     match Map.tryFind infringement.preNatIpDecimal ipToMacMapping with
                     | Some mac -> 
-                        {infringement with mac = mac}::infringementsWithMac, infringementsWithoutMac
-                    | _ -> infringementsWithMac, infringement::infringementsWithoutMac) 
-                    (infringementsWithMac, infringementsWithoutMac)
-            }) (async.Return ([], []))    
-    return Processed(infringementsWithMac, infringementsWithoutMac)            
+                        {infringement with mac = mac}::infringements
+                    | _ -> {infringement with error = "DHCP record not found"}::infringements) 
+                    infringements
+            }) (async.Return [])
+    return infringements
     with e -> 
+        //TODO: in noraml prudction impl here should be retry logic!!!!
+        //but we do not care much for local db
         let e = 
             match e with 
             | :? AggregateException as e -> e.InnerException
             | _ -> e 
-        return Error e.Message                           
+        return 
+            infringements
+            |> List.map(fun infringement -> 
+                {
+                    infringement with
+                        error = e.Message
+                })                    
 }               

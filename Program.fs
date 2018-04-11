@@ -1,132 +1,96 @@
 ﻿module SinkholeAlerter.App
 open System.IO
 open Microsoft.Extensions.Configuration
+open System
 
+///<summary>
+///Build pipeline for reading and searching infringements
+///argv[0] - optional json config file (see example config.json)
+///</summary>
 [<EntryPoint>]
 let main argv =
-    try
+    try    
     let configFileName =
-        if argv.Length > 1 then 
-            argv.[0]
+        if argv.Length > 1 then argv.[0]
         else "config.json"        
-    let builder = 
+    //parse json config
+    let config = 
         ConfigurationBuilder()
             .SetBasePath(Directory.GetCurrentDirectory())
             .AddJsonFile(configFileName)
-    let config = builder.Build()
-    async {
+            .Build()
+    let natLogChunkSize = 
+        match Int32.TryParse config.["natChunkSize"] with
+        | true, v when v > 0 && v < 100 -> v 
+        | _ -> 8
+    let reqId = System.Guid.NewGuid() //this we use for temp tables
+    let stopwatch = System.Diagnostics.Stopwatch()        
+    async { //async is kind of deferred computation, usually used for IO, or parallel threading in F#
+        stopwatch.Start()
         printfn "----------------------------------------"        
-        printfn "Reading infringements from notices..."        
+        printfn "Reading infringements from notices..."
+        //parsing noticesFolder notices      
         let! infringements = NoticeXmlParsing.parseManyAsync config.["noticesFolder"]            
-        let infringementsByNatLog = 
-            infringements |> List.fold(fun acc infringement -> 
-                let natLogFile = Path.Combine(config.["natLogFolder"], NatLogSearch.getNatLogFileName infringement)
-                match Map.tryFind natLogFile acc with
-                | None -> 
-                    Map.add natLogFile [infringement] acc
-                | Some infringements -> 
-                    Map.add natLogFile (infringement::infringements) acc) Map.empty
-        infringementsByNatLog
-        |> Map.iter(fun natLogFile infringements ->  
-
-            printfn "\tFor %s"  natLogFile
-            infringements |> List.iter(string >> printfn "\t\t%s")
-        )
-        printfn "----------------------------------------"    
-        printfn "Searching NAT logs..." 
+        let infringementsByNatLog, failedInfringementsOnParse, noticeCount, natLogs = 
+            infringements |> Array.fold(fun (infringementsByNatLog, failedInfringements, noticeCount, natLogs) infringement -> 
+                match infringement.error with
+                | "" -> 
+                    let natLogFile = Path.Combine(config.["natLogFolder"], infringement.natLogFileName)
+                    let infringementsByNatLog = 
+                        match Map.tryFind natLogFile infringementsByNatLog with
+                        | None -> 
+                            Map.add natLogFile [infringement] infringementsByNatLog
+                        | Some infringements -> 
+                            Map.add natLogFile (infringement::infringements) infringementsByNatLog
+                    infringementsByNatLog, failedInfringements, noticeCount+1, infringement.natLogFileName::natLogs
+                | _ ->
+                    infringementsByNatLog, infringement::failedInfringements, noticeCount, natLogs) (Map.empty, [], 0, [])
+        printfn "Parse done: %d to search, %d notices unparsable, elapsed %s" noticeCount failedInfringementsOnParse.Length
+            (stopwatch.Elapsed.ToString(@"mm\:ss"))
+        printfn "----------------------------------------"
+        printfn "Searching NAT logs in parallel (Chunk size: %dMB)..." natLogChunkSize
+        natLogs |> List.iter(printfn "\t%s")
         let! infringements = 
             infringementsByNatLog
             |> Map.fold(fun acc natLogFileName infringements -> 
-                (async {
-                    let! res = NatLogSearch.searchNatLogForManyAsync natLogFileName infringements
-                    return natLogFileName, res, infringements
-                 })::acc) []
-            |> Async.Parallel
-        let infringements = 
+                (NatLogSearch.searchNatLogForManyAsync natLogChunkSize natLogFileName infringements)::acc) []
+            |> Async.Parallel                        
+        let infringements, failedInfringementsOnNat = 
             infringements
-            |> Seq.fold(fun acc (natLogFile, res, originalInfringements) ->
-                match res with
-                | NatLogSearch.NatLogSearchResult.Processed (foundInfringements, []) ->
-                    printfn "\t%s: all infringements found" natLogFile
-                    foundInfringements
-                    |> List.iter(string >> printfn "\t\t%s")
-                    foundInfringements @ acc
-                | NatLogSearch.NatLogSearchResult.Processed (foundInfringements, toFind) ->
-                    printfn "\t%s: misses infringements" natLogFile
-                    toFind
-                    |> List.iter(string >> printfn "\t\t%s")
-                    printfn "\t%s: infringements found" natLogFile
-                    foundInfringements
-                    |> List.iter(string >> printfn "\t\t%s")                    
-                    foundInfringements @ acc
-                | NatLogSearch.NatLogSearchResult.FileNotFound -> 
-                    printfn "\t%s: file not found" natLogFile
-                    originalInfringements
-                    |> List.iter(string >> printfn "\t\t%s") 
-                    acc
-                | NatLogSearch.NatLogSearchResult.Error msg -> 
-                    printfn "\t%s: %s" natLogFile msg
-                    originalInfringements
-                    |> List.iter(string >> printfn "\t\t%s")                     
-                    acc
-            ) []
+            |> Seq.collect id
+            |> Seq.toList
+            |> List.partition(function {error=""} -> true | _ -> false)
+        printfn "Search done: %d found, %d has errors, %d filtered in total, elapsed %s"
+            infringements.Length failedInfringementsOnNat.Length (failedInfringementsOnNat.Length + failedInfringementsOnParse.Length)
+            (stopwatch.Elapsed.ToString(@"mm\:ss"))
         printfn "----------------------------------------"    
         printfn "DHCP db search..."             
-        let! infringementsOpt = DhcpDbSearch.findMacInDhcpAsync config.["connectionString"] infringements
-        let infringements =
-            match infringementsOpt with
-            | DhcpDbSearch.DhcpSearchResult.Processed (infringementsWithMac, []) -> 
-                infringementsWithMac
-                |> List.iter(string >> printfn "\t\t%s")
-                infringementsWithMac
-            | DhcpDbSearch.DhcpSearchResult.Processed (infringementsWithMac, infringementsWithoutMac) -> 
-                printfn "\tNo Mac was found for next:"
-                infringementsWithoutMac
-                |> List.iter(string >> printfn "\t\t%s")
-                match infringementsWithMac with 
-                | [] -> ()
-                | _ -> 
-                    printfn "\tContinue for:"
-                    infringementsWithMac
-                    |> List.iter(string >> printfn "\t\t%s")
-                infringementsWithMac
-            | DhcpDbSearch.DhcpSearchResult.Error msg -> 
-                eprintfn "\tDB error: %s" msg
-                exit 1
+        let! infringements = DhcpDbSearch.findMacInDhcpAsync reqId config.["connectionString"] infringements
+        let infringements, failedInfringementsOnDhcp =
+            infringements
+            |> List.partition(function {error=""} -> true | _ -> false)
+        printfn "Search done: %d found, %d has errors, %d filtered in total, elapsed %s"
+            infringements.Length failedInfringementsOnDhcp.Length (failedInfringementsOnDhcp.Length + failedInfringementsOnNat.Length + failedInfringementsOnParse.Length)  
+            (stopwatch.Elapsed.ToString(@"mm\:ss"))
+        printfn "----------------------------------------"          
         let! infringements = async {
             match infringements with
             | [] -> return []
-            | _ -> 
-                printfn "----------------------------------------"    
+            | _ ->                  
                 printfn "Fetching user info data..."
-                let! radiusInfringementsOpt, nonradiusInfringementsOpt = UserNameDbSearch.searchAsync config.["connectionString"] infringements
-                let radiusInfringements = 
-                    match radiusInfringementsOpt with
-                    | UserNameDbSearch.Error msg, infringements ->
-                        printfn "RADIUS fetch error: %A" msg
-                        infringements |> List.iter(string >> printfn "\t\t%s")
-                        []
-                    | UserNameDbSearch.Processed (withName, withoutName), _ -> 
-                        withName @ withoutName
-                    | _ -> []
-                let nonradiusInfringements = 
-                    match nonradiusInfringementsOpt with
-                    | UserNameDbSearch.Error msg, infringements ->
-                        printfn "non-RADIUS fetch error: %A" msg
-                        infringements |> List.iter(string >> printfn "\t\t%s")
-                        []
-                    | UserNameDbSearch.Processed (withName, withoutName), _ -> 
-                        withName @ withoutName
-                    | _ -> []   
-                return radiusInfringements @ nonradiusInfringements                     
-            }                     
-        printfn "----------------------------------------"  
-        printfn "Done."
-        printfn ""
-        match infringements with
-        | [] -> ()
-        | _ -> 
-            infringements |> List.iter(string >> printfn "%s")
+                let! infringements = UserNameDbSearch.searchAsync reqId config.["connectionString"] infringements
+                let infringements, failedInfringementsOnUserFetch = 
+                    infringements |> List.partition (function {error=""} -> true | _ -> false)
+                return infringements @ failedInfringementsOnUserFetch                     
+            } 
+        printfn "Done, elapsed %s" (stopwatch.Elapsed.ToString(@"mm\:ss"))
+        printfn "----------------------------------------" 
+        let infringements = 
+            infringements 
+            @ failedInfringementsOnDhcp
+            @ failedInfringementsOnNat
+            @ failedInfringementsOnParse
+        infringements |> List.iter(string >> printfn "%s")
     } |> Async.RunSynchronously
     0
     with e -> 

@@ -14,11 +14,35 @@ type Infringement = {
     postNatIp: string
     postNatPort: int
     remoteIp: string
-    remotePort: int
+    remotePort: string
+    noticeFileName: string
+    natLogFileName: string
+    natLogFilePosition: uint64 //byte position in nat log file
+    error: string
 }    
     with 
+        static member Empty = 
+            {
+                userName = ""
+                mac = ""
+                preNatIp = IPAddress.None
+                preNatIpDecimal = 0u
+                preNatPort = 0
+                utcTimeStamp = DateTime.MinValue
+                localTimeStamp = DateTime.MinValue
+                postNatIp = ""
+                postNatPort = 0
+                remoteIp = ""
+                remotePort = ""
+                noticeFileName = ""
+                error = ""
+                natLogFileName = ""
+                natLogFilePosition = 0UL
+            }
         override infringement.ToString() = 
-            sprintf "%s, %s --> %s --> %s:%d --> %s:%d, %s" 
+            sprintf "notice: %s%s\t%s, %s --> %s --> %s:%d --> %s:%s, %s%s%s" 
+                infringement.noticeFileName
+                Environment.NewLine
                 (if infringement.userName="" then "<no name>" else infringement.userName)
                 (if infringement.mac="" then "<no mac>" else infringement.mac)
                 (if infringement.preNatPort = 0 then "<no preNat>" else 
@@ -28,4 +52,10 @@ type Infringement = {
                 infringement.remoteIp
                 infringement.remotePort
                 (infringement.localTimeStamp.ToString("yyyy-MM-dd HH:mm:ss"))
+                (if infringement.error = "" then "" else sprintf "%s\terror: %s" Environment.NewLine infringement.error)
+                (if infringement.natLogFileName = "" then "" else 
+                    sprintf "%s\tnat: %s %s" 
+                        Environment.NewLine infringement.natLogFileName 
+                        (if infringement.natLogFilePosition = 0UL then "" else sprintf "@ %d" infringement.natLogFilePosition))
+                
                 

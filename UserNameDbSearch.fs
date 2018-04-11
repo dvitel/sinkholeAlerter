@@ -3,14 +3,9 @@ module SinkholeAlerter.UserNameDbSearch
 open System
 open SinkholeAlerter.Types
 
-type UserContactSearchResult = 
-    | Processed of Infringement list * Infringement list
-    | Error of string
-    | Noop
-
-let private createRadiusQueryAndParams ipMacPairs = 
+let private createRadiusQueryAndParams reqId ipMacPairs = 
     //TODO: here we have andother req id - use one req id during 1 session of searches
-    let reqId = Guid.NewGuid().ToString().Replace("-", "_") |> sprintf "radius_%s"
+    let reqTable = reqId.ToString().Replace("-", "_") |> sprintf "radius_%s"
     let _, reqValuesQueryParts, reqValuesParameters = 
         ipMacPairs
         |> List.fold(fun (i, reqValuesQueryParts, reqValuesParameters) (ip, mac) -> 
@@ -35,24 +30,22 @@ INSERT INTO %s VALUES %s;
 
 SELECT radacct.username, radacct.FramedIPAddress, radacct.CallingStationId FROM radacct 
     JOIN %s r ON radacct.FramedIPAddress = r.ip AND radacct.CallingStationId = r.mac;
-            " reqId reqId (String.Join(",", reqValuesQueryParts)) reqId
+            " reqTable reqTable (String.Join(",", reqValuesQueryParts)) reqTable
     query, reqValuesParameters
 
-let private radiusTableSearch connectionString (infringements: Infringement list) = async {
+let private radiusTableSearch reqId connectionString (infringements: Infringement list) = async {
     try
-    let chunks = 
+    let! infringements = 
         infringements
-        |> List.splitInto 10    
-    let! infringementsWithUserName, infringementsWithoutUserName = 
-        chunks 
+        |> List.splitInto 20  //again - do experiments here
         |> List.fold(fun acc chunk -> async {
-            let! infringementsWithUserName, infringementsWithoutUserName = acc
+            let! infringements = acc
             let query, parameters = 
                 chunk
                 |> List.map(fun infringement -> 
                     let ip = string infringement.preNatIp
                     ip, infringement.mac)
-                |> createRadiusQueryAndParams
+                |> createRadiusQueryAndParams reqId
             let! ipMacToUserNameMapping = 
                 Db.queryDbAsync connectionString query parameters 
                     (fun reader acc -> 
@@ -62,22 +55,27 @@ let private radiusTableSearch connectionString (infringements: Infringement list
                         Map.add (ip, mac) userName acc) Map.empty
             return
                 chunk
-                |> List.fold(fun (infringementsWithUserName, infringementsWithoutUserName) infringement -> 
+                |> List.fold(fun infringements infringement -> 
                     let ip = string infringement.preNatIp
                     match Map.tryFind (ip, infringement.mac) ipMacToUserNameMapping with
                     | Some username -> 
-                        {infringement with userName = username}::infringementsWithUserName, infringementsWithoutUserName
-                    | _ -> infringementsWithUserName, infringement::infringementsWithoutUserName) 
-                        (infringementsWithUserName, infringementsWithoutUserName)
-            }) (async.Return ([], []))
-    return UserContactSearchResult.Processed (infringementsWithUserName, infringementsWithoutUserName)
-    with | :? AggregateException as e -> return UserContactSearchResult.Error e.InnerException.Message
-         | e -> return UserContactSearchResult.Error e.Message              
+                        {infringement with userName = username}::infringements
+                    | _ -> {infringement with error = "RADIUS user name not found"}::infringements) 
+                        infringements
+            }) (async.Return [])
+    return infringements
+    with e -> 
+        let msg = 
+            match e with
+            | :? AggregateException as e -> e.InnerException.Message
+            | e -> e.Message
+        return 
+            infringements
+            |> List.map(fun i -> {i with error = e.Message})
 }
 
-let private createNonRadiusQueryAndParams macs = 
-    //TODO: here we have andother req id - use one req id during 1 session of searches
-    let reqId = Guid.NewGuid().ToString().Replace("-", "_") |> sprintf "nonradius_%s"
+let private createNonRadiusQueryAndParams reqId macs = 
+    let reqTable = reqId.ToString().Replace("-", "_") |> sprintf "nonradius_%s"
     let _, reqValuesQueryParts, reqValuesParameters = 
         macs
         |> List.fold(fun (i, reqValuesQueryParts, reqValuesParameters) mac -> 
@@ -98,22 +96,22 @@ INSERT INTO %s VALUES %s;
 
 SELECT contactinfo.contact, contactinfo.mac_string FROM contactinfo 
     JOIN %s r ON contactinfo.mac_string = r.mac;
-            " reqId reqId (String.Join(",", reqValuesQueryParts)) reqId
+            " reqTable reqTable (String.Join(",", reqValuesQueryParts)) reqTable
     query, reqValuesParameters
 
-let private nonradiusTableSearch connectionString (infringements: Infringement list) = async {
+let private nonradiusTableSearch reqId connectionString (infringements: Infringement list) = async {
     try
     let chunks = 
         infringements
         |> List.splitInto 10    
-    let! infringementsWithUserName, infringementsWithoutUserName = 
+    let! infringements = 
         chunks 
         |> List.fold(fun acc chunk -> async {
-            let! infringementsWithUserName, infringementsWithoutUserName = acc
+            let! infringements = acc
             let query, parameters = 
                 chunk
                 |> List.map(fun infringement -> infringement.mac)
-                |> createNonRadiusQueryAndParams
+                |> createNonRadiusQueryAndParams reqId
             let! macToUserNameMapping = 
                 Db.queryDbAsync connectionString query parameters 
                     (fun reader acc -> 
@@ -122,19 +120,25 @@ let private nonradiusTableSearch connectionString (infringements: Infringement l
                         Map.add mac userName acc) Map.empty
             return
                 chunk
-                |> List.fold(fun (infringementsWithUserName, infringementsWithoutUserName) infringement -> 
+                |> List.fold(fun infringements infringement -> 
                     match Map.tryFind infringement.mac macToUserNameMapping with
-                    | Some username -> 
-                        {infringement with userName = username}::infringementsWithUserName, infringementsWithoutUserName
-                    | _ -> infringementsWithUserName, infringement::infringementsWithoutUserName) 
-                        (infringementsWithUserName, infringementsWithoutUserName)
-            }) (async.Return ([], []))    
-    return UserContactSearchResult.Processed (infringementsWithUserName, infringementsWithoutUserName)
-    with | :? AggregateException as e -> return UserContactSearchResult.Error e.InnerException.Message
-         | e -> return UserContactSearchResult.Error e.Message              
+                    | Some username -> {infringement with userName = username}::infringements
+                    | _ -> {infringement with error="NON-RADIUS user name not found"}::infringements) 
+                        infringements
+            }) (async.Return [])    
+    return infringements
+    with e -> 
+        let msg = 
+            match e with
+            | :? AggregateException as e -> e.InnerException.Message
+            | e -> e.Message
+        return 
+            infringements
+            |> List.map(fun i -> {i with error = e.Message})
+            
 }
 
-let searchAsync connectionString (infringements: Infringement list) = async {
+let searchAsync reqId connectionString (infringements: Infringement list) = async {
     //first we filter all these infringements which does not have mac from prev step
     let radiusInfringements, nonradiusInfringements = 
         infringements |> List.fold(fun (radiusInfringements, nonradiusInfringements) infringement ->   
@@ -148,11 +152,11 @@ let searchAsync connectionString (infringements: Infringement list) = async {
                 radiusInfringements, infringement::nonradiusInfringements) ([], [])
     let! radiusInfringements' = 
         match radiusInfringements with
-        | [] -> async.Return Noop
-        | _ -> radiusTableSearch connectionString radiusInfringements
+        | [] -> async.Return []
+        | _ -> radiusTableSearch reqId connectionString radiusInfringements
     let! nonradiusInfringements' = 
         match nonradiusInfringements with
-        | [] -> async.Return Noop
-        | _ -> nonradiusTableSearch connectionString nonradiusInfringements
-    return (radiusInfringements', radiusInfringements), (nonradiusInfringements', nonradiusInfringements)
+        | [] -> async.Return []
+        | _ -> nonradiusTableSearch reqId connectionString nonradiusInfringements
+    return radiusInfringements' @ nonradiusInfringements'
 }        

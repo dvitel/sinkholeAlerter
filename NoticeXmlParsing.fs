@@ -14,6 +14,12 @@ let localTimeZone =
     lazy 
         TimeZoneInfo.FindSystemTimeZoneById (if linuxLikeOs then "US/Eastern" else "Eastern Standard Time")
 
+let getNatLogFileName (localTimeStamp: DateTime) =
+    let hour = localTimeStamp.Hour + 1
+    sprintf "nat.csv.%s%s.csv.gz" 
+        (localTimeStamp.ToString("yyyyMMdd"))
+        (if hour < 10 then sprintf "0%d" hour else string hour)  
+
 let parseAsync filePath = async {
     try
     let! noticeText = Async.AwaitTask(File.ReadAllTextAsync(filePath, Text.Encoding.UTF8))
@@ -26,33 +32,45 @@ let parseAsync filePath = async {
             "Source"
             |> (+) xmlns
             |> infringementXml.Root.Element
-        let timeStamp: DateTime = 
+        let timeStampOpt: DateTime option= 
             "TimeStamp"
             |> (+) xmlns
             |> sourceElement.Element
-            |> XElement.op_Explicit
-        let postNatIp: string = 
+            |> function 
+                | null -> None
+                | element -> Some(XElement.op_Explicit element)
+        let postNatIpOpt: string option = 
             "IP_Address"
             |> (+) xmlns
-            |> sourceElement.Element
-            |> XElement.op_Explicit   
-        let postNatPort: int = 
+            |> sourceElement.Element            
+            |> function 
+                | null -> None
+                | element -> Some(XElement.op_Explicit element)
+        let postNatPortOpt: int option = 
             "Port"
             |> (+) xmlns
             |> sourceElement.Element
-            |> XElement.op_Explicit   
-        let remoteIp: string = 
+            |> function 
+                | null -> None
+                | element -> Some(XElement.op_Explicit element)
+        let remoteIpOpt: string option = 
             "Destination_IP"
             |> (+) xmlns
             |> sourceElement.Element
-            |> XElement.op_Explicit
-        let remotePort: int = 
+            |> function 
+                | null -> None
+                | element -> Some(XElement.op_Explicit element)
+        let remotePortOpt: string option = 
             "Destination_Port"
             |> (+) xmlns
             |> sourceElement.Element
-            |> XElement.op_Explicit            
-        return 
-            Choice1Of2 
+            |> function 
+                | null -> None
+                | element -> Some(XElement.op_Explicit element)    
+        match timeStampOpt, postNatIpOpt, postNatPortOpt with
+        | Some timeStamp, Some postNatIp, Some postNatPort -> 
+            let localTimeStamp = TimeZoneInfo.ConvertTimeFromUtc(timeStamp, localTimeZone.Value)
+            return 
                 {
                     userName = "" //we did not find this field yet
                     mac = ""
@@ -60,43 +78,70 @@ let parseAsync filePath = async {
                     preNatIpDecimal = 0u
                     preNatPort = 0
                     utcTimeStamp = timeStamp //here it is UTC
-                    localTimeStamp = 
-                        TimeZoneInfo.ConvertTimeFromUtc(timeStamp, localTimeZone.Value)
+                    localTimeStamp = localTimeStamp                    
                     postNatIp = postNatIp
                     postNatPort = postNatPort
-                    remoteIp = remoteIp
-                    remotePort = remotePort
+                    remoteIp = 
+                        match remoteIpOpt with
+                        | None -> "<no remote ip>"
+                        | Some ip -> ip
+                    remotePort = 
+                        match remotePortOpt with
+                        | None -> "<no remote port>"
+                        | Some port -> port
+                    noticeFileName = Path.GetFileName filePath
+                    natLogFileName = getNatLogFileName localTimeStamp
+                    error = ""
+                    natLogFilePosition = 0UL
                 }            
+        | _, _, _ -> 
+            return 
+                {
+                    Infringement.Empty with
+                        noticeFileName = Path.GetFileName filePath
+                        error = "Cannot find timeStamp/postNatIp/postNatPort in notice"
+                }
     else 
-        return Choice2Of2 (sprintf "WARN: Cannot find xml in notice '%s'" filePath)
+        return 
+            {
+                Infringement.Empty with
+                    noticeFileName = Path.GetFileName filePath
+                    error = "File does not contain Infringement xml"
+            }
     with
         | :? FileNotFoundException -> 
-            return Choice2Of2 (sprintf "Notice file '%s' does not exist" filePath)
+            return 
+                {
+                    Infringement.Empty with
+                        noticeFileName = Path.GetFileName filePath
+                        error = "Notice file does not exist"
+                }
         | e -> 
             let e = 
                 match e with 
                 | :? AggregateException as e -> 
                     e.InnerException
                 | _ -> e
-            return Choice2Of2 (sprintf "WARN: Notice file '%s' error: %s. Skipped" filePath e.Message)
+            return 
+                {
+                    Infringement.Empty with
+                        noticeFileName = Path.GetFileName filePath
+                        error = e.Message
+                }
 }
+
+///<summary>
+///this function reads and parses notices in parallel 
+///</summary>
+///<param name="folderPath">string, folder of notices</param>
+///<returns>Infringement list - read infringements</param>
 let parseManyAsync folderPath = async { 
     try
     //parse infringements in parallel
-    let! infringementsOpt =
+    let! infringements =
         Directory.EnumerateFiles(folderPath, "*.txt")
         |> Seq.map(parseAsync)
         |> Async.Parallel
-    let infringements = 
-        infringementsOpt
-        |> Array.fold(fun acc infringementOpt -> 
-            match infringementOpt with
-            | Choice1Of2 infringement -> 
-                infringement::acc
-            | Choice2Of2 errorMessage -> 
-                eprintfn "%s" errorMessage
-                acc
-        ) []
     return infringements    
     with 
         | :? DirectoryNotFoundException -> 
