@@ -1,6 +1,7 @@
 namespace SinkholeAlerter.Types
 open System
 open System.Net
+open System.Runtime.Serialization
 
 //we will gather all info parts in this structure
 type Infringement = {
@@ -57,5 +58,11 @@ type Infringement = {
                     sprintf "%s\tnat: %s %s" 
                         Environment.NewLine infringement.natLogFileName 
                         (if infringement.natLogFilePosition = 0UL then "" else sprintf "@ %d" infringement.natLogFilePosition))
-                
+
+[<DataContract>]                
+type Config() = 
+    [<DataMember>] member val noticesFolder = "" with get, set
+    [<DataMember>] member val natLogFolder = "" with get, set
+    [<DataMember>] member val connectionString = "" with get, set
+    [<DataMember>] member val natChunkSize = 4 with get, set
                 

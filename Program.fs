@@ -1,7 +1,7 @@
 ﻿module SinkholeAlerter.App
 open System.IO
-open Microsoft.Extensions.Configuration
 open System
+open System.Runtime.Serialization.Json
 
 ///<summary>
 ///Build pipeline for reading and searching infringements
@@ -9,33 +9,30 @@ open System
 ///</summary>
 [<EntryPoint>]
 let main argv =
-    try    
+    try        
     let configFileName =
         if argv.Length > 1 then argv.[0]
         else "config.json"        
-    //parse json config
-    let config = 
-        ConfigurationBuilder()
-            .SetBasePath(Directory.GetCurrentDirectory())
-            .AddJsonFile(configFileName)
-            .Build()
-    let natLogChunkSize = 
-        match Int32.TryParse config.["natChunkSize"] with
-        | true, v when v > 0 && v < 100 -> v 
-        | _ -> 8
     let reqId = System.Guid.NewGuid() //this we use for temp tables
     let stopwatch = System.Diagnostics.Stopwatch()        
     async { //async is kind of deferred computation, usually used for IO, or parallel threading in F#
+        let! config = async {
+            let! configText = Async.AwaitTask(File.ReadAllTextAsync(configFileName))
+            let configTextBytes = System.Text.Encoding.UTF8.GetBytes configText
+            use memory = new MemoryStream(configTextBytes)
+            let serializer = DataContractJsonSerializer(typeof<Types.Config>)
+            return serializer.ReadObject(memory) :?> Types.Config
+        }        
         stopwatch.Start()
         printfn "----------------------------------------"        
         printfn "Reading infringements from notices..."
         //parsing noticesFolder notices      
-        let! infringements = NoticeXmlParsing.parseManyAsync config.["noticesFolder"]            
+        let! infringements = NoticeXmlParsing.parseManyAsync config.noticesFolder  
         let infringementsByNatLog, failedInfringementsOnParse, noticeCount, natLogs = 
             infringements |> Array.fold(fun (infringementsByNatLog, failedInfringements, noticeCount, natLogs) infringement -> 
                 match infringement.error with
                 | "" -> 
-                    let natLogFile = Path.Combine(config.["natLogFolder"], infringement.natLogFileName)
+                    let natLogFile = Path.Combine(config.natLogFolder, infringement.natLogFileName)
                     let infringementsByNatLog = 
                         match Map.tryFind natLogFile infringementsByNatLog with
                         | None -> 
@@ -48,12 +45,12 @@ let main argv =
         printfn "Parse done: %d to search, %d notices unparsable, elapsed %s" noticeCount failedInfringementsOnParse.Length
             (stopwatch.Elapsed.ToString(@"mm\:ss"))
         printfn "----------------------------------------"
-        printfn "Searching NAT logs in parallel (Chunk size: %dMB)..." natLogChunkSize
+        printfn "Searching NAT logs in parallel (Chunk size: %dMB)..." config.natChunkSize
         natLogs |> List.iter(printfn "\t%s")
         let! infringements = 
             infringementsByNatLog
             |> Map.fold(fun acc natLogFileName infringements -> 
-                (NatLogSearch.searchNatLogForManyAsync natLogChunkSize natLogFileName infringements)::acc) []
+                (NatLogSearch.searchNatLogForManyAsync config.natChunkSize natLogFileName infringements)::acc) []
             |> Async.Parallel                        
         let infringements, failedInfringementsOnNat = 
             infringements
@@ -65,7 +62,7 @@ let main argv =
             (stopwatch.Elapsed.ToString(@"mm\:ss"))
         printfn "----------------------------------------"    
         printfn "DHCP db search..."             
-        let! infringements = DhcpDbSearch.findMacInDhcpAsync reqId config.["connectionString"] infringements
+        let! infringements = DhcpDbSearch.findMacInDhcpAsync reqId config.connectionString infringements
         let infringements, failedInfringementsOnDhcp =
             infringements
             |> List.partition(function {error=""} -> true | _ -> false)
@@ -78,7 +75,7 @@ let main argv =
             | [] -> return []
             | _ ->                  
                 printfn "Fetching user info data..."
-                let! infringements = UserNameDbSearch.searchAsync reqId config.["connectionString"] infringements
+                let! infringements = UserNameDbSearch.searchAsync reqId config.connectionString infringements
                 let infringements, failedInfringementsOnUserFetch = 
                     infringements |> List.partition (function {error=""} -> true | _ -> false)
                 return infringements @ failedInfringementsOnUserFetch                     
