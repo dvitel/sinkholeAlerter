@@ -2,5 +2,6 @@
     "noticesFolder": "./cases",
     "natLogFolder": "./nat_logs",
     "connectionString": "Server=localhost;Database=logs_db;Uid=cyber;Pwd=u30530631;Auto Enlist=false;Convert Zero Datetime=true;",
-    "natChunkSize": "4"
+    "natChunkSize": 4,
+    "natTimeDelta": 2.0
 }

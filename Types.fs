@@ -65,4 +65,5 @@ type Config() =
     [<DataMember>] member val natLogFolder = "" with get, set
     [<DataMember>] member val connectionString = "" with get, set
     [<DataMember>] member val natChunkSize = 4 with get, set
+    [<DataMember>] member val natTimeDelta = 3.0 with get, set
                 

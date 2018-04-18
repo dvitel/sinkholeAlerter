@@ -8,11 +8,8 @@ open System.IO
 open System.IO.Compression
 open System.Net
 
-///this parameter defines range of searching in nat log file in minutes
-[<Literal>] 
-let TimeDelta = 3.      
 
-let searchNatLogForManyAsync chunkSize natLogFilePath (infringements: Infringement list) = async {
+let searchNatLogForManyAsync chunkSize timeDelta natLogFilePath (infringements: Infringement list) = async {
     try
     let newLinePattern = "\n" |> Encoding.ASCII.GetBytes
     let infringementsWithBytePatternAndMinMaxTime = 
@@ -21,9 +18,9 @@ let searchNatLogForManyAsync chunkSize natLogFilePath (infringements: Infringeme
             let bytePattern = 
                 sprintf ",%s,%d," infringement.postNatIp infringement.postNatPort
                 |> Encoding.ASCII.GetBytes
-            let minTime = infringement.localTimeStamp.AddMinutes(-TimeDelta)
-            let maxTime = infringement.localTimeStamp.AddMinutes(TimeDelta)                
-            (infringement, bytePattern, minTime, maxTime)::acc) []
+            let minTime = infringement.localTimeStamp.AddMinutes(-timeDelta)
+            let maxTime = infringement.localTimeStamp.AddMinutes(timeDelta)                
+            (infringement, bytePattern, minTime, maxTime, [], [])::acc) []
     let sizeOfDateTimePattern = "\nyyyy-MM-ddTHH:mm:ss.".Length
     use fileStream = new FileStream(natLogFilePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, bufferSize=4096, useAsync=true)
     use memStream = new MemoryStream(int fileStream.Length)
@@ -54,7 +51,7 @@ let searchNatLogForManyAsync chunkSize natLogFilePath (infringements: Infringeme
             let! offset, readCount = readSeveralBlocks offset 0 toRead
             if readCount = 0 then 
                 return 
-                    toFindInfringements |> List.fold(fun acc (i, _, _, _) -> 
+                    toFindInfringements |> List.fold(fun acc (i, _, _, _, _, _) -> 
                         {
                             i with error = "NAT record not found"
                         }::acc) foundInfringements
@@ -71,24 +68,23 @@ let searchNatLogForManyAsync chunkSize natLogFilePath (infringements: Infringeme
                         return! searchPattern foundInfringements toFindInfringements offset
                     | newLineIndexBeforeLastNewLine -> 
                         let lastDateInReadBytes = DateTime.Parse(Encoding.ASCII.GetString(buffer.[newLineIndexBeforeLastNewLine+1..newLineIndexBeforeLastNewLine+sizeOfDateTimePattern-2]))
+                        let firstDateInReadBytes = lazy DateTime.Parse(Encoding.ASCII.GetString(buffer.[..sizeOfDateTimePattern-6]))
+                        let newBuffer = lazy buffer.[..lastNewLineIndex-1]
                         //find infringement in current block
-                        let searchInfringement ((infringement, ipsBytePattern, minTime, maxTime) as infringementData) = async {
+                        let searchInfringement ((infringement, ipsBytePattern, minTime, maxTime, bufferBeforeTimePoint, bufferAfterTimePoint) as infringementData) = async {
                             if lastDateInReadBytes < minTime then
                                 return Choice1Of2 infringementData //This is choice of skipping current block
                             else 
                                 //TODO: this 2 lines could be done once - not in each parallel thread
-                                let dateString = Encoding.ASCII.GetString(buffer.[..sizeOfDateTimePattern-6])
-                                let firstDateInReadBytes = DateTime.Parse(dateString)
-                                if firstDateInReadBytes > maxTime then
-                                    return Choice2Of2 {infringement with error=sprintf "NAT record not found. Scanned up to %d min above" (int TimeDelta)} //This choice means that we read all data for current infringement
-                                        //and did not find record                                        
-                                else 
-                                    let rec scanIpPattern lastIndex = async {
+                                if firstDateInReadBytes.Value > maxTime then
+
+                                    let rec scanIpPattern searchArrayForPattern (buffer: byte[]) =
                                         //search for byte pattern
-                                        match backwardSearchArrayForPattern buffer 0 lastIndex ipsBytePattern with
+                                        match searchArrayForPattern buffer 0 buffer.Length ipsBytePattern with
                                         | -1 -> 
-                                            //not found in current block - try next                       
-                                            return Choice1Of2 infringementData                                      
+                                            //not found in current block - try next                
+                                            //printfn "!!! Searching byte pattern: %s" natLogFilePath       
+                                            None
                                         | ipPatternIndex -> 
                                             //found something interesting
                                             //printfn "Found ip pattern. Read: %d" readCount //for debugging
@@ -102,27 +98,47 @@ let searchNatLogForManyAsync chunkSize natLogFilePath (infringements: Infringeme
                                             //we can say for sure that if pattern found, string before it will
                                             //correspond to at log format <date>,---,<preNatIp>,<preNatPort>
                                             //there is no chance that preNatIp could be mistreated as remote_ip
-                                            let resOpt = 
-                                                try                                
-                                                let preNatPort = int(parts.[3])
-                                                let preNatIp = IPAddress.Parse(parts.[2])
-                                                Some
-                                                    {
-                                                        infringement with 
-                                                            preNatPort = preNatPort
-                                                            preNatIp = preNatIp
-                                                            preNatIpDecimal = ipToDecimal preNatIp
-                                                    }
-                                                with _ -> 
-                                                    //should be never here, but just in case
-                                                    eprintfn "Found line which does not correspond to nat format: %s" line
-                                                    None
-                                            match resOpt with
-                                            | None -> 
-                                                return! scanIpPattern (ipPatternIndex-1)
-                                            | Some res -> return Choice2Of2 res
-                                    }                                            
-                                    return! scanIpPattern lastNewLineIndex
+                                            try                                
+                                            let preNatPort = int(parts.[3])
+                                            let preNatIp = IPAddress.Parse(parts.[2])
+                                            Some
+                                                {
+                                                    infringement with 
+                                                        preNatPort = preNatPort
+                                                        preNatIp = preNatIp
+                                                        preNatIpDecimal = ipToDecimal preNatIp
+                                                }
+                                            with _ -> 
+                                                //should be never here, but just in case
+                                                eprintfn "Found line which does not correspond to nat format: %s" line
+                                                exit(1)    
+                                    let! infringementOpt = 
+                                        seq {
+                                            yield 
+                                                async {    
+                                                    return 
+                                                        bufferBeforeTimePoint |> List.tryPick(fun buffer -> 
+                                                            scanIpPattern backwardSearchArrayForPattern buffer
+                                                        )     
+                                                }
+                                            yield 
+                                                async {    
+                                                    return 
+                                                        bufferAfterTimePoint |> List.rev |> List.tryPick(fun buffer -> 
+                                                            scanIpPattern searchArrayForPattern buffer
+                                                        )
+                                                }
+                                        } |> Async.Choice
+                                    match infringementOpt with
+                                    | None -> 
+                                        return Choice2Of2 {infringement with error=sprintf "NAT record not found. Scanned up to %d min above" (int timeDelta)}
+                                    | Some infringement -> return Choice2Of2 infringement
+                                        //and did not find record                                        
+                                else 
+                                    if firstDateInReadBytes.Value > infringement.localTimeStamp then
+                                        return Choice1Of2 ((infringement, ipsBytePattern, minTime, maxTime, bufferBeforeTimePoint, newBuffer.Value::bufferAfterTimePoint))
+                                    else 
+                                        return Choice1Of2 ((infringement, ipsBytePattern, minTime, maxTime, newBuffer.Value::bufferBeforeTimePoint, bufferAfterTimePoint))
                         }                                    
                         let! newlyFoundInfringementsOpt = 
                             toFindInfringements

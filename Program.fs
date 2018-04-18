@@ -50,7 +50,7 @@ let main argv =
         let! infringements = 
             infringementsByNatLog
             |> Map.fold(fun acc natLogFileName infringements -> 
-                (NatLogSearch.searchNatLogForManyAsync config.natChunkSize natLogFileName infringements)::acc) []
+                (NatLogSearch.searchNatLogForManyAsync config.natChunkSize config.natTimeDelta natLogFileName infringements)::acc) []
             |> Async.Parallel                        
         let infringements, failedInfringementsOnNat = 
             infringements
