@@ -37,7 +37,7 @@ let private radiusTableSearch reqId connectionString (infringements: Infringemen
     try
     let! infringements = 
         infringements
-        |> List.splitInto 20  //again - do experiments here
+        |> List.chunkBySize 20  //again - do experiments here
         |> List.fold(fun acc chunk -> async {
             let! infringements = acc
             let query, parameters = 
@@ -103,7 +103,7 @@ let private nonradiusTableSearch reqId connectionString (infringements: Infringe
     try
     let chunks = 
         infringements
-        |> List.splitInto 10    
+        |> List.chunkBySize 10    
     let! infringements = 
         chunks 
         |> List.fold(fun acc chunk -> async {

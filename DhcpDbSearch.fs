@@ -26,12 +26,14 @@ CREATE TEMPORARY TABLE %s (
         
 INSERT INTO %s VALUES %s;
 
-SELECT * FROM 
-    (SELECT dhcp.ip_decimal, dhcp.mac_string FROM dhcp 
+SELECT * FROM dhcp 
+JOIN
+((SELECT ip_decimal, MAX(timeStamp) as timeStamp FROM 
+    (SELECT dhcp.ip_decimal, dhcp.timeStamp FROM dhcp 
         JOIN %s r ON dhcp.ip_decimal = r.ip_decimal 
                 AND dhcp.timeStamp <= r.tm 
         ORDER BY dhcp.ip_decimal ASC, dhcp.timestamp DESC) res
-GROUP BY ip_decimal;    
+GROUP BY ip_decimal) as dhcp2) ON dhcp.ip_decimal = dhcp2.ip_decimal AND dhcp.timeStamp = dhcp2.timeStamp;   
             " reqTable reqTable (String.Join(",", reqValuesQueryParts)) reqTable
     query, reqValuesParameters
 
@@ -39,7 +41,7 @@ let findMacInDhcpAsync reqId connectionString (infringements: Infringement list)
     try
     let! infringements = 
         infringements 
-        |> List.splitInto 20 //todo: some experimentation
+        |> List.chunkBySize 20 //todo: some experimentation
         |> List.fold(fun acc chunk -> async {
             let! infringements = acc
             let query, parameters = 
@@ -47,6 +49,7 @@ let findMacInDhcpAsync reqId connectionString (infringements: Infringement list)
                 |> List.map(fun infringement -> 
                     infringement.preNatIpDecimal, infringement.localTimeStamp)
                 |> createDhcpQueryAndParameters reqId
+            //printfn "Executing %s" query
             let! ipToMacMapping = 
                 Db.queryDbAsync connectionString query parameters 
                     (fun reader acc -> 

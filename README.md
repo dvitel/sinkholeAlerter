@@ -89,7 +89,7 @@ notice: dmca_notice_3-false_positive.txt
 
 Output provides timing. Script above ended in ~40 seconds providing expected information for test cases. 
 
-### Optmizations
+### Optimizations
 1. Creating index on MySQl side for Radacct query (execution time goes from 40s to ~25s): 
 ```
 CREATE INDEX IX_radacct_2 ON radacct (FramedIPAddress, CallingStationId);
