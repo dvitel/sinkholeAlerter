@@ -3,6 +3,8 @@ module SinkholeAlerter.UserNameDbSearch
 open System
 open SinkholeAlerter.Types
 
+//as with DHCP MySQL query this module performs quering of radacct or contactinfo 
+//methods here are very similar to those in DHCP quering - TODO: think about refactoring and another generalization
 let private createRadiusQueryAndParams reqId ipMacPairs = 
     //TODO: here we have andother req id - use one req id during 1 session of searches
     let reqTable = reqId.ToString().Replace("-", "_") |> sprintf "radius_%s"
@@ -33,6 +35,10 @@ SELECT radacct.username, radacct.FramedIPAddress, radacct.CallingStationId FROM 
             " reqTable reqTable (String.Join(",", reqValuesQueryParts)) reqTable
     query, reqValuesParameters
 
+//again:
+// 1) we split infringements by chunks of 20
+// 2) for each chunk we perform query
+// 3) we filter errored data and fill necessary fields
 let private radiusTableSearch reqId connectionString (infringements: Infringement list) = async {
     try
     let! infringements = 
@@ -74,6 +80,7 @@ let private radiusTableSearch reqId connectionString (infringements: Infringemen
             |> List.map(fun i -> {i with error = e.Message})
 }
 
+//NON-RADIUS user: using contactinfo
 let private createNonRadiusQueryAndParams reqId macs = 
     let reqTable = reqId.ToString().Replace("-", "_") |> sprintf "nonradius_%s"
     let _, reqValuesQueryParts, reqValuesParameters = 
@@ -99,6 +106,10 @@ SELECT contactinfo.contact, contactinfo.mac_string FROM contactinfo
             " reqTable reqTable (String.Join(",", reqValuesQueryParts)) reqTable
     query, reqValuesParameters
 
+//again:
+// 1) we split infringements by chunks of 20
+// 2) for each chunk we perform query
+// 3) we filter errored data and fill necessary fields
 let private nonradiusTableSearch reqId connectionString (infringements: Infringement list) = async {
     try
     let chunks = 
@@ -138,6 +149,7 @@ let private nonradiusTableSearch reqId connectionString (infringements: Infringe
             
 }
 
+//here we first partition infringements into RADIUS, NON-RADIUS collections by analysing first 2 bytes 
 let searchAsync reqId connectionString (infringements: Infringement list) = async {
     //first we filter all these infringements which does not have mac from prev step
     let radiusInfringements, nonradiusInfringements = 
@@ -146,7 +158,7 @@ let searchAsync reqId connectionString (infringements: Infringement list) = asyn
             | (null | ""), _ -> 
                 eprintfn "No MAC was found for infringement during dhcp search: %s" (string infringement)
                 radiusInfringements, nonradiusInfringements
-            | _, [| 172uy; 19uy; _; _ |] -> 
+            | _, [| 172uy; 19uy; _; _ |] -> //here is pattern matching of first 2 bytes, neat
                 infringement::radiusInfringements, nonradiusInfringements
             | _ -> 
                 radiusInfringements, infringement::nonradiusInfringements) ([], [])

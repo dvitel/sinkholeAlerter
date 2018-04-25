@@ -1,5 +1,7 @@
 module SinkholeAlerter.NatLogSearch
 
+//This module is searching nat logs for infringement data (preNat ip and port)
+
 open System
 open SinkholeAlerter.Types
 open SinkholeAlerter.Utils
@@ -8,7 +10,52 @@ open System.IO
 open System.IO.Compression
 open System.Net
 
-
+///<param name='chunkSize'>
+///We read natLog file by chunkSize. It is usually 4, 8MB
+///</param>
+///<param name='timeDelta'>
+///In minutes, define diapasone of infringement data lookup
+///When scanning nat log we will analyze in detail data with timeStamp: (infringementTimeStamp - timeDelta, infringementTimeStamp + timeDelta)
+///It is usually 3min. If it is small, it will speedup search but increase a chance of missing infringement data
+///</param>
+///<param name='natLogFilePath'>
+///Path to gzipped nat log file.
+///This function will unzip it on run
+///</param>
+///<param name='infringements'>
+///Infringements which should be looked for in the nat log
+///</param>
+///
+///<summary>
+///Search for infringement data in nat logs.
+///Procedure (simplified explanation) is next:
+/// 0. For each infringement we define minTime, maxTime and ipPattern
+///    minTime = timeStamp - timeDelta, maxTime = timeStamp + timeDelta
+///        - this is diapasone of infringement search
+///    ipPattern is byte array which contains ASCII for <postNatIP>:<postNatPort>
+/// 1. Function reads chunkSize block of bytes
+/// 2. Then it checks last date in the block. 
+/// 3. If it is less then minDate, block is discarded and execution goes to step 1
+/// 4. If it is greater then minDate, we read first date in chuckSize block
+/// 5. If it is greater then maxDate, we mark infringement as processed (record not found) and exclude it from next searches. Goto 9 
+/// 6. In other case we perform scanning of ther block for byte ipPattern.
+///    We are searching for index of first match of subsequence to sequence of pattern in the block 
+/// 7. If we find such match in the block, from that point we search backward for pattern of '\n' and parse ASCII string between two found indexes.
+///    In parsed string we find preNatIp and preNatPort because nat log format is fixed.   
+///    We mark infringement as processed and exclude it for future searches
+/// 8. If we do not find the pattern, we skip the block and goto 1.
+/// 9. If all infringements were processed, return. In other case goto 1.
+/// This is simplified view of what is happenning here.
+/// In reality, algorithm cannot read chunk block preciselly on edges of '\n'
+/// Thus, partially read nat line is placed in buffer which is carried over to next chunkSize read
+/// this buffer is located then at start of our file reading buffer and next read puts bytes by given offset
+/// Another aspect that was not mentioned is that algorithm does not perform scan from start to end or from end to start immediatelly.
+/// Next optimization was made.
+/// For each infringement we store two list of buffers (buffersBeforeTimeStamp, buffersAfterTimeStamp)
+/// While scanning we put all read chunkSize buffers which firstRecordTimeStamp < infringementTimeStamp into buffersBeforeTimeStamp
+/// Same we do for buffers with firstRecordTimeStamp >= infringementTimeStamp but put them into buffersAfterTimeSpan
+/// When we reach the point when firstRecordTimeStamp > maxTime we start search in buffers starting from that ones that are closer to timeStamp
+///</summary>
 let searchNatLogForManyAsync chunkSize timeDelta natLogFilePath (infringements: Infringement list) = async {
     try
     let newLinePattern = "\n" |> Encoding.ASCII.GetBytes

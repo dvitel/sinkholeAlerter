@@ -20,13 +20,14 @@ let getNatLogFileName (localTimeStamp: DateTime) =
         (localTimeStamp.ToString("yyyyMMdd"))
         (if hour < 10 then sprintf "0%d" hour else string hour)  
 
+//parsing XML files
 let parseAsync filePath = async {
     try
     let! noticeText = Async.AwaitTask(File.ReadAllTextAsync(filePath, Text.Encoding.UTF8))
-    let m = noticePattern.Match(noticeText)
+    let m = noticePattern.Match(noticeText) //use regex
     if m.Success then 
         let xmlns = XNamespace.op_Implicit "http://www.acns.net/ACNS"
-        let infringementXml = XDocument.Parse(m.Groups.["notice"].Value, LoadOptions.None)
+        let infringementXml = XDocument.Parse(m.Groups.["notice"].Value, LoadOptions.None) //use XDOcument
         //infringementXml.Root.Name <- xmlns + infringementXml.Root.Name.LocalName
         let sourceElement = 
             "Source"

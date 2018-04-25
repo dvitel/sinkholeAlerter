@@ -13,9 +13,17 @@ let main argv =
     let configFileName =
         if argv.Length > 1 then argv.[0]
         else "config.json"        
-    let reqId = System.Guid.NewGuid() //this we use for temp tables
+    let reqId = System.Guid.NewGuid() //this we use for temp tables in MySQL
     let stopwatch = System.Diagnostics.Stopwatch()        
-    async { //async is kind of deferred computation, usually used for IO, or parallel threading in F#
+    //async is kind of deferred computation, usually used for IO, or parallel threading in F#
+    //async execution does not start at point of declaration
+    //To start it we use Async.Start, Async.RunSynchronously, let!, use!, do!
+    //this is similar concept to 
+    // 1. C/C++ (new standard) - coroutines 
+    // 2. C# - async/await 
+    // 3. EcmaScript 6 (JavaScript) - async/await 
+    async { 
+        //here we read config from file and parse it to object of type Config: see Types.fs        
         let! config = async {
             let! configText = Async.AwaitTask(File.ReadAllTextAsync(configFileName))
             let configTextBytes = System.Text.Encoding.UTF8.GetBytes configText
@@ -28,6 +36,8 @@ let main argv =
         printfn "Reading infringements from notices..."
         //parsing noticesFolder notices      
         let! infringements = NoticeXmlParsing.parseManyAsync config.noticesFolder  
+        //from infringements we build map natLogFileName --> list of corresponding infringements
+        //at same time we filter failed infringements on parse out of processing
         let infringementsByNatLog, failedInfringementsOnParse, noticeCount, natLogs = 
             infringements |> Array.fold(fun (infringementsByNatLog, failedInfringements, noticeCount, natLogs) infringement -> 
                 match infringement.error with
@@ -47,22 +57,35 @@ let main argv =
         printfn "----------------------------------------"
         printfn "Searching NAT logs in parallel (Chunk size: %dMB)..." config.natChunkSize
         natLogs |> List.iter(printfn "\t%s")
+
+        //here we search natlogs - 5 files in parallel at a time (in order to avoid OutOfMemoryException or exhausting amount of file handlers)
         let! infringements = 
             infringementsByNatLog
             |> Map.fold(fun acc natLogFileName infringements -> 
                 (NatLogSearch.searchNatLogForManyAsync config.natChunkSize config.natTimeDelta natLogFileName infringements)::acc) []
-            |> Async.Parallel                        
+            |> Seq.chunkBySize 5
+            |> Seq.fold(fun acc asyncs -> 
+                async {
+                    let! prevResults = acc 
+                    let! newResults = asyncs |> Async.Parallel
+                    let newResults = newResults |> Seq.collect id 
+                    return [ yield! prevResults; yield! newResults ]
+                }) (async.Return [])
+        
+        //again, filter out fails in search
         let infringements, failedInfringementsOnNat = 
             infringements
-            |> Seq.collect id
-            |> Seq.toList
             |> List.partition(function {error=""} -> true | _ -> false)
         printfn "Search done: %d found, %d has errors, %d filtered in total, elapsed %s"
             infringements.Length failedInfringementsOnNat.Length (failedInfringementsOnNat.Length + failedInfringementsOnParse.Length)
             (stopwatch.Elapsed.ToString(@"mm\:ss"))
         printfn "----------------------------------------"    
-        printfn "DHCP db search..."             
+        printfn "DHCP db search..."        
+
+        //here we search Dhcp MySQL table      
         let! infringements = DhcpDbSearch.findMacInDhcpAsync reqId config.connectionString infringements
+
+        //filtering out errors again
         let infringements, failedInfringementsOnDhcp =
             infringements
             |> List.partition(function {error=""} -> true | _ -> false)
@@ -70,6 +93,9 @@ let main argv =
             infringements.Length failedInfringementsOnDhcp.Length (failedInfringementsOnDhcp.Length + failedInfringementsOnNat.Length + failedInfringementsOnParse.Length)  
             (stopwatch.Elapsed.ToString(@"mm\:ss"))
         printfn "----------------------------------------"          
+
+        //if we have any infringements on this stage, we should search user tables to find user name
+        //it is done in UserNameDbSearch.searchAsync
         let! infringements = async {
             match infringements with
             | [] -> return []
@@ -82,13 +108,15 @@ let main argv =
             } 
         printfn "Done, elapsed %s" (stopwatch.Elapsed.ToString(@"mm\:ss"))
         printfn "----------------------------------------" 
+
+        //combine all together for report
         let infringements = 
             infringements 
             @ failedInfringementsOnDhcp
             @ failedInfringementsOnNat
             @ failedInfringementsOnParse
         infringements |> List.iter(string >> printfn "%s")
-    } |> Async.RunSynchronously
+    } |> Async.RunSynchronously //start in main thread - another case - to start inside some multithreaded environment in ThreadPool
     0
     with e -> 
         eprintfn "Error: %A" e

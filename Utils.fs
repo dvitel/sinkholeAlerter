@@ -39,6 +39,10 @@ let ipToDecimal (ip: System.Net.IPAddress) =
                   |> Array.fold(*) 1u
         acc + (uint32 b) * tmp) 0u        
 
+//just for timezone for now
+//linux: "US/Eastern" 
+//windows: "Eastern Standard Time"
+//hope .NET Core will normalize this with time
 let linuxLikeOs =
     match Environment.OSVersion.Platform with
     | PlatformID.Unix | PlatformID.MacOSX -> true
