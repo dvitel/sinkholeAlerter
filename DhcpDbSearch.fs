@@ -43,19 +43,19 @@ let private createDhcpQueryAndParameters reqId ipDecimalWithTimeStamp =
     let query = 
         sprintf "
 CREATE TEMPORARY TABLE %s (
-    ip_decimal int(10) UNSIGNED NOT NULL PRIMARY KEY UNIQUE,
+    ip_decimal int(10) UNSIGNED NOT NULL,
     tm timestamp NOT NULL);
         
 INSERT INTO %s VALUES %s;
 
-SELECT * FROM dhcp 
+SELECT dhcp.ip_decimal, dhcp2.tm, dhcp.mac_string FROM dhcp 
 JOIN
-((SELECT ip_decimal, MAX(timeStamp) as timeStamp FROM 
-    (SELECT dhcp.ip_decimal, dhcp.timeStamp FROM dhcp 
+((SELECT ip_decimal, tm, MAX(timeStamp) as timeStamp FROM 
+    (SELECT dhcp.ip_decimal, r.tm, dhcp.timeStamp FROM dhcp 
         JOIN %s r ON dhcp.ip_decimal = r.ip_decimal 
-                AND dhcp.timeStamp <= r.tm 
-        ORDER BY dhcp.ip_decimal ASC, dhcp.timestamp DESC) res
-GROUP BY ip_decimal) as dhcp2) ON dhcp.ip_decimal = dhcp2.ip_decimal AND dhcp.timeStamp = dhcp2.timeStamp;   
+                AND dhcp.timeStamp <= r.tm) res
+GROUP BY ip_decimal, tm) as dhcp2) ON dhcp.ip_decimal = dhcp2.ip_decimal AND dhcp.timeStamp = dhcp2.timeStamp;   
+
             " reqTable reqTable (String.Join(",", reqValuesQueryParts)) reqTable
     query, reqValuesParameters
 
@@ -72,18 +72,20 @@ let findMacInDhcpAsync reqId connectionString (infringements: Infringement list)
                 chunk
                 |> List.map(fun infringement -> 
                     infringement.preNatIpDecimal, infringement.localTimeStamp)
+                |> List.distinct
                 |> createDhcpQueryAndParameters reqId
             //printfn "Executing %s" query
             let! ipToMacMapping = 
                 Db.queryDbAsync connectionString query parameters 
                     (fun reader acc -> 
                         let ipDecimal = reader.[0] :?> uint32
-                        let mac = reader.[1] :?> string
-                        Map.add ipDecimal mac acc) Map.empty
+                        let tm = reader.[1] :?> DateTime
+                        let mac = reader.[2] :?> string
+                        Map.add (ipDecimal, tm) mac acc) Map.empty
             return
                 chunk
                 |> List.fold(fun infringements infringement -> 
-                    match Map.tryFind infringement.preNatIpDecimal ipToMacMapping with
+                    match Map.tryFind (infringement.preNatIpDecimal, infringement.localTimeStamp) ipToMacMapping with
                     | Some mac -> 
                         {infringement with mac = mac}::infringements
                     | _ -> {infringement with error = "DHCP record not found"}::infringements) 

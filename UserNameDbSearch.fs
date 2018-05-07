@@ -10,15 +10,17 @@ let private createRadiusQueryAndParams reqId ipMacPairs =
     let reqTable = reqId.ToString().Replace("-", "_") |> sprintf "radius_%s"
     let _, reqValuesQueryParts, reqValuesParameters = 
         ipMacPairs
-        |> List.fold(fun (i, reqValuesQueryParts, reqValuesParameters) (ip, mac) -> 
+        |> List.fold(fun (i, reqValuesQueryParts, reqValuesParameters) (ip, mac, tm) -> 
             let ipParamName = sprintf "@ip%d" i
             let macParamName = sprintf "@mac%d" i
+            let tmParamName = sprintf "@tm%d" i
             let reqValuesQueryParts = 
-                (sprintf "(%s, %s)" ipParamName macParamName)::reqValuesQueryParts
+                (sprintf "(%s, %s, %s)" ipParamName macParamName tmParamName)::reqValuesQueryParts
             let reqValuesParameters = 
                 reqValuesParameters
                 |> Map.add ipParamName (ip :> obj)
                 |> Map.add macParamName (mac :> obj)
+                |> Map.add tmParamName (tm :> obj)
             i+1, reqValuesQueryParts, reqValuesParameters
         ) (0, [], Map.empty)    
     let query = 
@@ -26,12 +28,18 @@ let private createRadiusQueryAndParams reqId ipMacPairs =
 CREATE TEMPORARY TABLE %s (
     ip varchar(15) NOT NULL,
     mac varchar(50) NOT NULL, 
-    PRIMARY KEY pk_tmp (ip, mac));
+    tm timestamp NOT NULL);
         
 INSERT INTO %s VALUES %s;
 
-SELECT radacct.username, radacct.FramedIPAddress, radacct.CallingStationId FROM radacct 
-    JOIN %s r ON radacct.FramedIPAddress = r.ip AND radacct.CallingStationId = r.mac;
+SELECT radacct.username, radacct.FramedIPAddress, radacct.CallingStationId, res2.tm FROM radacct
+    JOIN
+    (SELECT res.FramedIPAddress, res.CallingStationId, res.tm, MAX(timestamp) as timestamp FROM
+        (SELECT radacct.FramedIPAddress, radacct.CallingStationId, r.tm, radacct.timestamp FROM radacct 
+            JOIN %s r ON radacct.FramedIPAddress = r.ip AND radacct.CallingStationId = r.mac AND radacct.timestamp <= r.tm) res
+        GROUP BY res.FramedIPAddress, res.CallingStationId, res.tm) res2
+    ON radacct.FramedIPAddress = res2.FramedIPAddress AND radacct.CallingStationId = res2.CallingStationId AND radacct.timestamp = res2.timestamp;
+  
             " reqTable reqTable (String.Join(",", reqValuesQueryParts)) reqTable
     query, reqValuesParameters
 
@@ -50,7 +58,8 @@ let private radiusTableSearch reqId connectionString (infringements: Infringemen
                 chunk
                 |> List.map(fun infringement -> 
                     let ip = string infringement.preNatIp
-                    ip, infringement.mac)
+                    ip, infringement.mac, infringement.localTimeStamp)
+                |> List.distinct
                 |> createRadiusQueryAndParams reqId
             let! ipMacToUserNameMapping = 
                 Db.queryDbAsync connectionString query parameters 
@@ -58,12 +67,13 @@ let private radiusTableSearch reqId connectionString (infringements: Infringemen
                         let userName = reader.[0] :?> string
                         let ip = reader.[1] :?> string
                         let mac = reader.[2] :?> string
-                        Map.add (ip, mac) userName acc) Map.empty
+                        let tm = reader.[3] :?> DateTime
+                        Map.add (ip, mac, tm) userName acc) Map.empty
             return
                 chunk
                 |> List.fold(fun infringements infringement -> 
                     let ip = string infringement.preNatIp
-                    match Map.tryFind (ip, infringement.mac) ipMacToUserNameMapping with
+                    match Map.tryFind (ip, infringement.mac, infringement.localTimeStamp) ipMacToUserNameMapping with
                     | Some username -> 
                         {infringement with userName = username}::infringements
                     | _ -> {infringement with error = "RADIUS user name not found"}::infringements) 
@@ -77,7 +87,7 @@ let private radiusTableSearch reqId connectionString (infringements: Infringemen
             | e -> e.Message
         return 
             infringements
-            |> List.map(fun i -> {i with error = e.Message})
+            |> List.map(fun i -> {i with error = msg})
 }
 
 //NON-RADIUS user: using contactinfo
@@ -122,6 +132,7 @@ let private nonradiusTableSearch reqId connectionString (infringements: Infringe
             let query, parameters = 
                 chunk
                 |> List.map(fun infringement -> infringement.mac)
+                |> List.distinct
                 |> createNonRadiusQueryAndParams reqId
             let! macToUserNameMapping = 
                 Db.queryDbAsync connectionString query parameters 

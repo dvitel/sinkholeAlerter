@@ -56,7 +56,7 @@ let main argv =
             (stopwatch.Elapsed.ToString(@"mm\:ss"))
         printfn "----------------------------------------"
         printfn "Searching NAT logs in parallel (Chunk size: %dMB)..." config.natChunkSize
-        natLogs |> List.iter(printfn "\t%s")
+        natLogs |> List.distinct |> List.iter(printfn "\t%s")
 
         //here we search natlogs - 5 files in parallel at a time (in order to avoid OutOfMemoryException or exhausting amount of file handlers)
         let! infringements = 
