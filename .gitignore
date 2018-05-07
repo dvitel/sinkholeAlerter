@@ -2,3 +2,4 @@ bin/*
 cases/*
 nat_logs/*
 obj/*
+cases.other/*
